@@ -1,0 +1,96 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoomStatus {
+  IDLE
+  PREFLIGHT
+  LIVE
+  ENDED
+}
+
+enum ParticipantState {
+  WAITING
+  CONNECTED
+  DEGRADED
+  RECONNECTING
+  DISCONNECTED
+  REJECTED
+}
+
+enum InviteType {
+  VIDEO_AUDIO
+  AUDIO_ONLY
+  OBS_FEED
+  SCREEN_SHARE
+  OPERATOR
+  TELESTRATOR
+  VIEWER
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  rooms     Room[]
+}
+
+model Room {
+  id            String            @id @default(uuid())
+  publicId      String            @unique @default(cuid())
+  name          String
+  status        RoomStatus        @default(IDLE)
+  maxGuests     Int               @default(8)
+  waitingRoom   Boolean           @default(true)
+  ownerId       String
+  owner         User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  participants  RoomParticipant[]
+  invitations   Invitation[]
+  auditEvents   AuditEvent[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+}
+
+model RoomParticipant {
+  id          String           @id @default(uuid())
+  roomId      String
+  room        Room             @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  displayName String
+  roleLabel   String?
+  state       ParticipantState @default(WAITING)
+  sessionKey  String           @unique @default(cuid())
+  joinedAt    DateTime         @default(now())
+  lastSeenAt  DateTime         @default(now())
+}
+
+model Invitation {
+  id         String     @id @default(uuid())
+  roomId     String
+  room       Room       @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  publicId   String     @unique @default(cuid())
+  tokenHash  String     @unique
+  type       InviteType @default(VIDEO_AUDIO)
+  revokedAt  DateTime?
+  expiresAt  DateTime?
+  createdAt  DateTime   @default(now())
+}
+
+model AuditEvent {
+  id        String   @id @default(uuid())
+  roomId    String
+  room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  actor     String
+  action    String
+  target    String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([roomId, createdAt])
+}
