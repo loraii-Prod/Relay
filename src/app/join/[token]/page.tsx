@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import { Brand } from "@/components/brand";
 import { StatusDot } from "@/components/status-dot";
 import { MediaDeviceManager, type ContributionPreset } from "@/features/webrtc/media-device-manager";
-import { LiveKitTransportProvider } from "@/features/webrtc/livekit-provider";
+import { VdoNinjaTransportProvider } from "@/features/webrtc/vdo-ninja-provider";
 
 type Stage = "preflight" | "joining" | "waiting" | "connecting" | "live" | "rejected" | "error";
 
@@ -15,12 +15,19 @@ type DeviceLists = {
   speakers: MediaDeviceInfo[];
 };
 
+const VIDEO_BITRATES: Record<ContributionPreset, number> = {
+  LOW: 1_500_000,
+  STANDARD: 3_000_000,
+  HIGH: 5_000_000,
+  BROADCAST: 8_000_000,
+};
+
 export default function JoinPage() {
   const params = useParams<{ token: string }>();
   const invitationId = params.token;
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const transportRef = useRef<LiveKitTransportProvider | null>(null);
+  const transportRef = useRef<VdoNinjaTransportProvider | null>(null);
   const pollingRef = useRef<number | null>(null);
 
   const manager = useMemo(() => new MediaDeviceManager(), []);
@@ -106,6 +113,7 @@ export default function JoinPage() {
   async function connectMedia(participantId: string, sessionKey: string) {
     if (!streamRef.current) throw new Error("Local media is no longer available");
     setStage("connecting");
+
     const response = await fetch("/api/media/token", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -113,15 +121,22 @@ export default function JoinPage() {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error ?? "Unable to start media contribution");
+    if (data.provider !== "vdo.ninja") throw new Error("Unsupported media provider");
 
-    const transport = new LiveKitTransportProvider();
+    const transport = new VdoNinjaTransportProvider();
     transportRef.current = transport;
-    await transport.connect(data.roomId, data.token);
+    transport.onStateChange((state) => {
+      if (state === "reconnecting" || state === "degraded") setMessage("Media connection is recovering…");
+      if (state === "connected") setMessage("");
+      if (state === "disconnected" && stage === "live") setMessage("Media connection disconnected.");
+    });
 
-    const camera = streamRef.current.getVideoTracks()[0];
-    const microphone = streamRef.current.getAudioTracks()[0];
-    if (camera) await transport.publish(camera, { role: "camera", streamId: participantId });
-    if (microphone) await transport.publish(microphone, { role: "microphone", streamId: participantId });
+    await transport.connect({ roomId: data.roomId, password: data.password, label: data.label });
+    await transport.publishStream(streamRef.current, {
+      streamId: data.streamId,
+      label: data.label,
+      videoBitrate: VIDEO_BITRATES[quality],
+    });
     setStage("live");
   }
 
@@ -168,7 +183,7 @@ export default function JoinPage() {
           <div className="join-copy">
             <span className="kicker">{roomName ? roomName.toUpperCase() : "RELAY"} / CONTRIBUTOR</span>
             <h1>{stage === "waiting" ? "Waiting for producer" : stage === "connecting" ? "Connecting media" : stage === "live" ? "You’re connected" : stage === "rejected" ? "Access ended" : "Unable to join"}</h1>
-            <p>{stage === "waiting" ? "Your devices are ready. The producer can see your request and must accept you before your contribution goes on the production media network." : stage === "connecting" ? "The producer accepted you. Relay is establishing the low-latency media path." : stage === "live" ? "Your camera and microphone are being contributed to Relay. Keep this page open during the production." : stage === "rejected" ? "The producer rejected or removed this contribution session." : message}</p>
+            <p>{stage === "waiting" ? "Your devices are ready. The producer must accept you before Relay publishes your contribution." : stage === "connecting" ? "The producer accepted you. Relay is establishing the low-latency VDO.Ninja WebRTC path." : stage === "live" ? "Your camera and microphone are being contributed peer-to-peer. Keep this page open during the production." : stage === "rejected" ? "The producer rejected or removed this contribution session." : message}</p>
           </div>
           {stage === "live" && <div className="preview-box"><video ref={videoRef} autoPlay playsInline muted/><div className="live-state"><StatusDot state="ok"/> CONTRIBUTING</div></div>}
           {stage === "waiting" && <div className="test-result"><div><span>STATE</span><b>WAITING ROOM</b></div><span className="secure-label"><StatusDot state="warn"/> PRODUCER APPROVAL REQUIRED</span></div>}
