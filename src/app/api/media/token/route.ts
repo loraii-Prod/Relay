@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { AccessToken } from "livekit-server-sdk";
 import { prisma } from "@/lib/prisma";
+import { getVdoRoomCredentials } from "@/server/media/vdo";
+import { mediaStreamId } from "@/features/webrtc/transport";
 
 export const runtime = "nodejs";
 
@@ -14,9 +15,6 @@ export async function POST(request: Request) {
   if (!process.env.DATABASE_URL) {
     return NextResponse.json({ error: "database_not_configured" }, { status: 503 });
   }
-  if (!process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET || !process.env.NEXT_PUBLIC_LIVEKIT_URL) {
-    return NextResponse.json({ error: "media_backend_not_configured" }, { status: 503 });
-  }
 
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
@@ -28,34 +26,18 @@ export async function POST(request: Request) {
     include: { room: true },
   });
 
-  if (!participant) {
-    return NextResponse.json({ error: "participant_not_authorized" }, { status: 401 });
-  }
-  if (participant.state === "WAITING") {
-    return NextResponse.json({ error: "waiting_for_producer" }, { status: 409 });
-  }
-  if (participant.state !== "CONNECTED" && participant.state !== "DEGRADED" && participant.state !== "RECONNECTING") {
+  if (!participant) return NextResponse.json({ error: "participant_not_authorized" }, { status: 401 });
+  if (participant.state === "WAITING") return NextResponse.json({ error: "waiting_for_producer" }, { status: 409 });
+  if (!["CONNECTED", "DEGRADED", "RECONNECTING"].includes(participant.state)) {
     return NextResponse.json({ error: "participant_not_authorized" }, { status: 401 });
   }
 
-  const token = new AccessToken(process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET, {
-    identity: participant.id,
-    name: participant.displayName,
-    ttl: "15m",
-    metadata: JSON.stringify({ roomPublicId: participant.room.publicId, roleLabel: participant.roleLabel }),
-  });
-
-  token.addGrant({
-    roomJoin: true,
-    room: participant.roomId,
-    canPublish: true,
-    canSubscribe: true,
-    canPublishData: true,
-  });
-
+  const media = getVdoRoomCredentials(participant.roomId);
   return NextResponse.json({
-    token: await token.toJwt(),
-    url: process.env.NEXT_PUBLIC_LIVEKIT_URL,
-    roomId: participant.roomId,
+    provider: media.provider,
+    roomId: media.roomId,
+    password: media.password,
+    streamId: mediaStreamId(participant.id),
+    label: participant.displayName,
   });
 }
