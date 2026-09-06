@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/server/auth/session";
-import { getVdoRoomCredentials } from "@/server/media/vdo";
+import { getVdoRoomCredentials, isMediaSecretConfigured } from "@/server/media/vdo";
 
 export const runtime = "nodejs";
 
 export async function POST(_: Request, { params }: { params: Promise<{ roomId: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+  if (!isMediaSecretConfigured()) return NextResponse.json({ error: "media_secret_not_configured" }, { status: 503 });
 
   const { roomId } = await params;
   const room = await prisma.room.findFirst({ where: { publicId: roomId, ownerId: user.id } });
