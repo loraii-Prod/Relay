@@ -58,11 +58,15 @@ export function RoomConsole({ initialRoom }: { initialRoom: RoomData }) {
   const viewingRef = useRef<Set<string>>(new Set());
   const statsCollectorsRef = useRef<Map<string, StatsCollector>>(new Map());
 
+  const participantIds = room.participants.map((participant) => participant.id).join(",");
   const participantByStream = useMemo(() => {
     const map = new Map<string, string>();
     room.participants.forEach((participant) => map.set(mediaStreamId(participant.id), participant.id));
     return map;
-  }, [room.participants]);
+    // participantIds deliberately makes this mapping stable across room polling
+    // when only participant state/timestamps change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [participantIds]);
 
   async function refreshRoom() {
     const response = await fetch(`/api/rooms/${room.publicId}`, { cache: "no-store" });
