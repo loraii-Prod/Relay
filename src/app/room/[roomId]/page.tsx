@@ -4,6 +4,7 @@ import { StatusDot } from "@/components/status-dot";
 import { RoomConsole } from "@/components/room-console";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/server/auth/session";
+import { isMediaSecretConfigured } from "@/server/media/vdo";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,7 @@ export default async function RoomPage({ params }: { params: Promise<{ roomId: s
   });
   if (!room) redirect("/dashboard");
 
+  const mediaReady = isMediaSecretConfigured();
   const initialRoom = {
     publicId: room.publicId,
     name: room.name,
@@ -41,7 +43,7 @@ export default async function RoomPage({ params }: { params: Promise<{ roomId: s
         <Brand/>
         <div className="room-ident"><span>ROOM</span><b>{room.name.toUpperCase()}</b></div>
         <nav>{["ROOM","GUESTS","ROUTING","COMMS","DRAW","RECORD","OBS","DIAGNOSTICS"].map((item,index)=><button className={index===0?"active":""} key={item} disabled={index > 0}>{item}</button>)}</nav>
-        <div className="top-telemetry"><span><StatusDot state="ok"/> WEBRTC · VDO.NINJA</span><span><StatusDot state="idle"/> OBS</span><b>{room.status}</b></div>
+        <div className="top-telemetry"><span><StatusDot state={mediaReady?"ok":"warn"}/> WEBRTC · {mediaReady?"VDO.NINJA":"SETUP REQUIRED"}</span><span><StatusDot state="idle"/> OBS</span><b>{room.status}</b></div>
       </header>
       <RoomConsole initialRoom={initialRoom}/>
     </main>
