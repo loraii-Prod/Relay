@@ -9,7 +9,7 @@ import type {
 } from "./transport";
 
 const SDK_URL = "https://cdn.jsdelivr.net/gh/steveseguin/ninjasdk@latest/vdoninja-sdk.min.js";
-const SIGNAL_HOST = "wss://wss.vdo.ninja";
+const SIGNAL_HOST = "wss://apibackup.vdo.ninja";
 
 type VdoDetailEvent<T> = Event & { detail: T };
 type VdoSdk = EventTarget & {
@@ -22,31 +22,65 @@ type VdoSdk = EventTarget & {
   stopViewing(streamId: string): Promise<void> | void;
 };
 type VdoConstructor = new (options?: {
-  host?: string; room?: string; password?: string | false; salt?: string; debug?: boolean;
-  turnServers?: RTCIceServer[] | null | false; forceTURN?: boolean; label?: string;
+  host?: string;
+  room?: string;
+  password?: string | false;
+  salt?: string;
+  debug?: boolean;
+  turnServers?: RTCIceServer[] | null | false;
+  forceTURN?: boolean;
+  label?: string;
 }) => VdoSdk;
 
 declare global {
-  interface Window { VDONinjaSDK?: VdoConstructor; __relayVdoSdkPromise?: Promise<VdoConstructor>; }
+  interface Window {
+    VDONinjaSDK?: VdoConstructor;
+    __relayVdoSdkPromise?: Promise<VdoConstructor>;
+  }
 }
 
 function loadSdk(): Promise<VdoConstructor> {
   if (window.VDONinjaSDK) return Promise.resolve(window.VDONinjaSDK);
   if (window.__relayVdoSdkPromise) return window.__relayVdoSdkPromise;
+
   window.__relayVdoSdkPromise = new Promise((resolve, reject) => {
     const existing = document.querySelector<HTMLScriptElement>(`script[src="${SDK_URL}"]`);
     const script = existing ?? document.createElement("script");
     const timeout = window.setTimeout(() => reject(new Error("VDO.Ninja SDK load timed out")), 15_000);
+
     const finish = () => {
       window.clearTimeout(timeout);
       if (window.VDONinjaSDK) resolve(window.VDONinjaSDK);
       else reject(new Error("VDO.Ninja SDK did not expose VDONinjaSDK"));
     };
+
     script.addEventListener("load", finish, { once: true });
-    script.addEventListener("error", () => { window.clearTimeout(timeout); reject(new Error("Unable to load VDO.Ninja SDK")); }, { once: true });
-    if (!existing) { script.src = SDK_URL; script.async = true; document.head.appendChild(script); }
+    script.addEventListener("error", () => {
+      window.clearTimeout(timeout);
+      reject(new Error("Unable to load VDO.Ninja SDK"));
+    }, { once: true });
+
+    if (!existing) {
+      script.src = SDK_URL;
+      script.async = true;
+      document.head.appendChild(script);
+    }
   });
+
   return window.__relayVdoSdkPromise;
+}
+
+function errorText(value: unknown) {
+  if (value instanceof Error) return value.message;
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const candidate = value as { error?: unknown; message?: unknown; reason?: unknown };
+    if (typeof candidate.error === "string") return candidate.error;
+    if (candidate.error instanceof Error) return candidate.error.message;
+    if (typeof candidate.message === "string") return candidate.message;
+    if (typeof candidate.reason === "string") return candidate.reason;
+  }
+  return "Unknown VDO.Ninja transport error";
 }
 
 export class VdoNinjaTransportProvider implements MediaTransportProvider {
@@ -56,65 +90,146 @@ export class VdoNinjaTransportProvider implements MediaTransportProvider {
   private stateListeners = new Set<(state: MediaTransportState) => void>();
   private trackListeners = new Set<(event: RemoteMediaTrackEvent) => void>();
   private trackRemovedListeners = new Set<(event: Omit<RemoteMediaTrackEvent, "track">) => void>();
+  private sdkError: Error | null = null;
   state: MediaTransportState = "idle";
 
-  private setState(next: MediaTransportState) { this.state = next; this.stateListeners.forEach((listener) => listener(next)); }
+  private setState(next: MediaTransportState) {
+    this.state = next;
+    this.stateListeners.forEach((listener) => listener(next));
+  }
 
   async connect(connection: MediaTransportConnection) {
     this.setState("connecting");
     this.connection = connection;
+    this.sdkError = null;
+
     try {
       const Constructor = await loadSdk();
-      // Password, salt and room are supplied once at construction. Passing the
-      // password again to joinRoom can cause a second encryption derivation in
-      // some SDK builds and prevents room discovery.
-      const sdk = new Constructor({ host: SIGNAL_HOST, room: connection.roomId, password: connection.password, salt: "vdo.ninja", label: connection.label, turnServers: null, debug: false });
+      const sdk = new Constructor({
+        host: SIGNAL_HOST,
+        password: connection.password,
+        salt: "vdo.ninja",
+        label: connection.label,
+        turnServers: null,
+        debug: false,
+      });
       this.sdk = sdk;
+
+      sdk.addEventListener("error", (event) => {
+        const detail = (event as VdoDetailEvent<{ error?: unknown; message?: unknown }>).detail;
+        this.sdkError = new Error(errorText(detail));
+      });
       sdk.addEventListener("reconnecting", () => this.setState("reconnecting"));
       sdk.addEventListener("reconnected", () => this.setState("connected"));
       sdk.addEventListener("connectionRecovering", () => this.setState("degraded"));
       sdk.addEventListener("connectionRecovered", () => this.setState("connected"));
-      sdk.addEventListener("connectionFailed", () => this.setState("degraded"));
+      sdk.addEventListener("connectionFailed", (event) => {
+        const detail = (event as VdoDetailEvent<{ reason?: unknown }>).detail;
+        this.sdkError = new Error(errorText(detail));
+        this.setState("degraded");
+      });
       sdk.addEventListener("disconnected", () => this.setState("disconnected"));
       sdk.addEventListener("track", (event) => {
         const detail = (event as VdoDetailEvent<{ track: MediaStreamTrack; streamID?: string; uuid?: string }>).detail;
         if (!detail?.track) return;
-        const remote: RemoteMediaTrackEvent = { trackId: detail.track.id, streamId: detail.streamID ?? detail.uuid ?? "unknown", kind: detail.track.kind === "audio" ? "audio" : "video", track: detail.track };
+        const remote: RemoteMediaTrackEvent = {
+          trackId: detail.track.id,
+          streamId: detail.streamID ?? detail.uuid ?? "unknown",
+          kind: detail.track.kind === "audio" ? "audio" : "video",
+          track: detail.track,
+        };
         this.trackListeners.forEach((listener) => listener(remote));
       });
       sdk.addEventListener("trackRemoved", (event) => {
         const detail = (event as VdoDetailEvent<{ track?: MediaStreamTrack; streamID?: string; uuid?: string }>).detail;
         if (!detail?.track) return;
-        const removed = { trackId: detail.track.id, streamId: detail.streamID ?? detail.uuid ?? "unknown", kind: detail.track.kind === "audio" ? "audio" as const : "video" as const };
+        const removed = {
+          trackId: detail.track.id,
+          streamId: detail.streamID ?? detail.uuid ?? "unknown",
+          kind: detail.track.kind === "audio" ? "audio" as const : "video" as const,
+        };
         this.trackRemovedListeners.forEach((listener) => listener(removed));
       });
+
+      // Follow the documented A/V sequence exactly: construct with the original
+      // password + vdo.ninja salt, connect signaling, then join the room.
       await sdk.connect();
       await sdk.joinRoom({ room: connection.roomId });
+      if (this.sdkError) throw this.sdkError;
       this.setState("connected");
     } catch (error) {
+      const failure = this.sdkError ?? (error instanceof Error ? error : new Error(errorText(error)));
       this.sdk = null;
       this.setState("disconnected");
-      throw error;
+      throw failure;
     }
   }
 
   async publishStream(stream: MediaStream, options: PublishStreamOptions) {
     if (!this.sdk || !this.connection) throw new Error("VDO.Ninja transport is not connected");
-    return this.sdk.publish(stream, { streamID: options.streamId, room: this.connection.roomId, label: options.label, media: options.videoBitrate ? { video: { maxBitrate: options.videoBitrate } } : undefined });
+    this.sdkError = null;
+    try {
+      const result = await this.sdk.publish(stream, {
+        streamID: options.streamId,
+        room: this.connection.roomId,
+        label: options.label,
+        media: options.videoBitrate ? { video: { maxBitrate: options.videoBitrate } } : undefined,
+      });
+      if (this.sdkError) throw this.sdkError;
+      return result;
+    } catch (error) {
+      throw this.sdkError ?? (error instanceof Error ? error : new Error(errorText(error)));
+    }
   }
-  async stopPublishing() { await this.sdk?.stopPublishing(); }
+
+  async stopPublishing() {
+    await this.sdk?.stopPublishing();
+  }
+
   async view(streamId: string) {
     if (!this.sdk) throw new Error("VDO.Ninja transport is not connected");
     if (this.viewed.has(streamId)) throw new Error(`Stream ${streamId} is already being viewed`);
-    const peer = await this.sdk.view(streamId, { audio: true, video: true, downloads: false });
-    this.viewed.add(streamId); return peer;
+    this.sdkError = null;
+    try {
+      const peer = await this.sdk.view(streamId, { audio: true, video: true, downloads: false });
+      if (this.sdkError) throw this.sdkError;
+      this.viewed.add(streamId);
+      return peer;
+    } catch (error) {
+      throw this.sdkError ?? (error instanceof Error ? error : new Error(errorText(error)));
+    }
   }
-  async stopViewing(streamId: string) { if (!this.sdk || !this.viewed.has(streamId)) return; await this.sdk.stopViewing(streamId); this.viewed.delete(streamId); }
+
+  async stopViewing(streamId: string) {
+    if (!this.sdk || !this.viewed.has(streamId)) return;
+    await this.sdk.stopViewing(streamId);
+    this.viewed.delete(streamId);
+  }
+
   async disconnect() {
-    if (this.sdk) { for (const streamId of this.viewed) await this.sdk.stopViewing(streamId); this.viewed.clear(); await this.sdk.disconnect(); }
-    this.sdk = null; this.connection = null; this.setState("disconnected");
+    if (this.sdk) {
+      for (const streamId of this.viewed) await this.sdk.stopViewing(streamId);
+      this.viewed.clear();
+      await this.sdk.disconnect();
+    }
+    this.sdk = null;
+    this.connection = null;
+    this.sdkError = null;
+    this.setState("disconnected");
   }
-  onStateChange(listener: (state: MediaTransportState) => void) { this.stateListeners.add(listener); return () => { this.stateListeners.delete(listener); }; }
-  onRemoteTrack(listener: (event: RemoteMediaTrackEvent) => void) { this.trackListeners.add(listener); return () => { this.trackListeners.delete(listener); }; }
-  onRemoteTrackRemoved(listener: (event: Omit<RemoteMediaTrackEvent, "track">) => void) { this.trackRemovedListeners.add(listener); return () => { this.trackRemovedListeners.delete(listener); }; }
+
+  onStateChange(listener: (state: MediaTransportState) => void) {
+    this.stateListeners.add(listener);
+    return () => { this.stateListeners.delete(listener); };
+  }
+
+  onRemoteTrack(listener: (event: RemoteMediaTrackEvent) => void) {
+    this.trackListeners.add(listener);
+    return () => { this.trackListeners.delete(listener); };
+  }
+
+  onRemoteTrackRemoved(listener: (event: Omit<RemoteMediaTrackEvent, "track">) => void) {
+    this.trackRemovedListeners.add(listener);
+    return () => { this.trackRemovedListeners.delete(listener); };
+  }
 }
