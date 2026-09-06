@@ -1,14 +1,28 @@
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 
-function digest(value: string) {
-  return createHash("sha256").update(value, "utf8").digest("hex");
+const MIN_SECRET_LENGTH = 32;
+
+export function isMediaSecretConfigured() {
+  return Boolean(process.env.RELAY_MEDIA_SECRET && process.env.RELAY_MEDIA_SECRET.length >= MIN_SECRET_LENGTH);
+}
+
+function requireMediaSecret() {
+  const secret = process.env.RELAY_MEDIA_SECRET;
+  if (!secret || secret.length < MIN_SECRET_LENGTH) {
+    throw new Error("media_secret_not_configured");
+  }
+  return secret;
+}
+
+function digest(secret: string, value: string) {
+  return createHmac("sha256", secret).update(value, "utf8").digest("hex");
 }
 
 export function getVdoRoomCredentials(roomInternalId: string) {
-  // The internal UUID is never placed in guest URLs. Hashing it creates stable,
-  // non-enumerable media identifiers without requiring a third-party secret.
-  const roomDigest = digest(`relay:vdo:room:${roomInternalId}`);
-  const passwordDigest = digest(`relay:vdo:password:${roomInternalId}`);
+  const secret = requireMediaSecret();
+  const roomDigest = digest(secret, `relay:vdo:room:${roomInternalId}`);
+  const passwordDigest = digest(secret, `relay:vdo:password:${roomInternalId}`);
+
   return {
     roomId: `relay_${roomDigest.slice(0, 32)}`,
     password: passwordDigest,
