@@ -18,12 +18,12 @@ export async function GET() {
 
   return NextResponse.json({
     service: "relay",
-    version: "0.2.0",
+    version: "0.5.1",
     status: database === "connected" ? "ready" : "degraded",
     checks: {
       web: "ready",
       database,
-      mediaTransport: "not-configured",
+      mediaTransport: "vdo.ninja",
       obsConnector: "client-side",
     },
     responseTimeMs: Date.now() - started,
