@@ -2,7 +2,15 @@ export type MediaTransportState = "idle" | "connecting" | "connected" | "degrade
 
 export type PublishTrackOptions = {
   streamId: string;
-  role: "camera" | "microphone" | "screen" | "return";
+  role: "camera" | "microphone" | "screen" | "return" | "talkback";
+};
+
+export type RemoteMediaTrackEvent = {
+  trackId: string;
+  participantId: string;
+  kind: "audio" | "video";
+  track: MediaStreamTrack;
+  name?: string;
 };
 
 export interface MediaTransportProvider {
@@ -13,6 +21,8 @@ export interface MediaTransportProvider {
   unpublish(trackId: string): Promise<void>;
   subscribe(trackId: string): Promise<MediaStreamTrack>;
   onStateChange(listener: (state: MediaTransportState) => void): () => void;
+  onRemoteTrack(listener: (event: RemoteMediaTrackEvent) => void): () => void;
+  onRemoteTrackRemoved(listener: (event: Pick<RemoteMediaTrackEvent, "trackId" | "participantId" | "kind">) => void): () => void;
 }
 
 export class UnsupportedTransport implements MediaTransportProvider {
@@ -23,4 +33,6 @@ export class UnsupportedTransport implements MediaTransportProvider {
   async unpublish(): Promise<void> {}
   async subscribe(): Promise<MediaStreamTrack> { throw new Error("Media transport backend is not configured"); }
   onStateChange(): () => void { return () => {}; }
+  onRemoteTrack(): () => void { return () => {}; }
+  onRemoteTrackRemoved(): () => void { return () => {}; }
 }
