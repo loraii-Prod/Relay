@@ -1,0 +1,41 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: relay
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: relay
+    ports:
+      - "5432:5432"
+    volumes:
+      - relay-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d relay"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - relay-redis:/data
+
+  coturn:
+    image: coturn/coturn:4.6-alpine
+    network_mode: host
+    command:
+      - -n
+      - --log-file=stdout
+      - --realm=relay.local
+      - --use-auth-secret
+      - --static-auth-secret=relay-development-only
+      - --min-port=49160
+      - --max-port=49200
+      - --fingerprint
+
+volumes:
+  relay-postgres:
+  relay-redis:
