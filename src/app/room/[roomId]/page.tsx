@@ -19,7 +19,6 @@ export default async function RoomPage({ params }: { params: Promise<{ roomId: s
   });
   if (!room) redirect("/dashboard");
 
-  const mediaConfigured = Boolean(process.env.NEXT_PUBLIC_LIVEKIT_URL && process.env.LIVEKIT_API_KEY && process.env.LIVEKIT_API_SECRET);
   const initialRoom = {
     publicId: room.publicId,
     name: room.name,
@@ -42,9 +41,9 @@ export default async function RoomPage({ params }: { params: Promise<{ roomId: s
         <Brand/>
         <div className="room-ident"><span>ROOM</span><b>{room.name.toUpperCase()}</b></div>
         <nav>{["ROOM","GUESTS","ROUTING","COMMS","DRAW","RECORD","OBS","DIAGNOSTICS"].map((item,index)=><button className={index===0?"active":""} key={item} disabled={index > 0}>{item}</button>)}</nav>
-        <div className="top-telemetry"><span><StatusDot state={mediaConfigured?"ok":"warn"}/> WEBRTC</span><span><StatusDot state="idle"/> OBS</span><b>{room.status}</b></div>
+        <div className="top-telemetry"><span><StatusDot state="ok"/> WEBRTC · VDO.NINJA</span><span><StatusDot state="idle"/> OBS</span><b>{room.status}</b></div>
       </header>
-      <RoomConsole initialRoom={initialRoom} mediaConfigured={mediaConfigured}/>
+      <RoomConsole initialRoom={initialRoom}/>
     </main>
   );
 }
