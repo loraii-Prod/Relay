@@ -8,7 +8,9 @@ import type {
   RemoteMediaTrackEvent,
 } from "./transport";
 
-const SDK_URL = "https://unpkg.com/@vdoninja/sdk@1.6.0/vdoninja-sdk.min.js";
+// Official VDO.Ninja browser SDK distribution. Pin this to a release tag once
+// Relay has completed its production interoperability matrix.
+const SDK_URL = "https://cdn.jsdelivr.net/gh/steveseguin/ninjasdk@latest/vdoninja-sdk.min.js";
 const SIGNAL_HOST = "wss://wss.vdo.ninja";
 
 type VdoDetailEvent<T> = Event & { detail: T };
