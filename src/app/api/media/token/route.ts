@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { getVdoRoomCredentials } from "@/server/media/vdo";
+import { getVdoRoomCredentials, isMediaSecretConfigured } from "@/server/media/vdo";
 import { mediaStreamId } from "@/features/webrtc/transport";
 
 export const runtime = "nodejs";
@@ -14,6 +14,9 @@ const requestSchema = z.object({
 export async function POST(request: Request) {
   if (!process.env.DATABASE_URL) {
     return NextResponse.json({ error: "database_not_configured" }, { status: 503 });
+  }
+  if (!isMediaSecretConfigured()) {
+    return NextResponse.json({ error: "media_secret_not_configured" }, { status: 503 });
   }
 
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
