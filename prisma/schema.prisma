@@ -34,12 +34,45 @@ enum InviteType {
 }
 
 model User {
+  id              String      @id @default(uuid())
+  email           String      @unique
+  name            String?
+  passwordHash    String
+  emailVerifiedAt DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  rooms           Room[]
+  sessions        Session[]
+  apiTokens       ApiToken[]
+}
+
+model Session {
   id        String   @id @default(uuid())
-  email     String   @unique
-  name      String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  rooms     Room[]
+  lastSeenAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model ApiToken {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label      String
+  prefix     String
+  tokenHash  String   @unique
+  scopes     String[]
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
 }
 
 model Room {
@@ -56,6 +89,8 @@ model Room {
   auditEvents   AuditEvent[]
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
+
+  @@index([ownerId, updatedAt])
 }
 
 model RoomParticipant {
@@ -68,6 +103,8 @@ model RoomParticipant {
   sessionKey  String           @unique @default(cuid())
   joinedAt    DateTime         @default(now())
   lastSeenAt  DateTime         @default(now())
+
+  @@index([roomId, state])
 }
 
 model Invitation {
@@ -80,6 +117,8 @@ model Invitation {
   revokedAt  DateTime?
   expiresAt  DateTime?
   createdAt  DateTime   @default(now())
+
+  @@index([roomId, createdAt])
 }
 
 model AuditEvent {
