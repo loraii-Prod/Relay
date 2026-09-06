@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Room as LiveKitRoom, RoomEvent, Track, type RemoteVideoTrack } from "livekit-client";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { StatusDot } from "@/components/status-dot";
 import { RemoteVideo } from "@/components/remote-video";
+import { RemoteAudio } from "@/components/remote-audio";
+import { VdoNinjaTransportProvider } from "@/features/webrtc/vdo-ninja-provider";
+import { mediaStreamId } from "@/features/webrtc/transport";
+import { StatsCollector, type RelayConnectionStats } from "@/features/webrtc/stats-collector";
 
 type Participant = {
   id: string;
@@ -23,6 +26,8 @@ type RoomData = {
   participants: Participant[];
 };
 
+type TrackState = { video?: MediaStreamTrack; audio?: MediaStreamTrack };
+
 function stateDot(state: Participant["state"]): "ok" | "warn" | "bad" | "idle" {
   if (state === "CONNECTED") return "ok";
   if (state === "WAITING" || state === "DEGRADED" || state === "RECONNECTING") return "warn";
@@ -30,14 +35,34 @@ function stateDot(state: Participant["state"]): "ok" | "warn" | "bad" | "idle" {
   return "idle";
 }
 
-export function RoomConsole({ initialRoom, mediaConfigured }: { initialRoom: RoomData; mediaConfigured: boolean }) {
+function formatBitrate(value: number | null | undefined) {
+  if (value == null) return "—";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)} Mb/s`;
+  return `${Math.round(value / 1000)} kb/s`;
+}
+
+function formatMs(value: number | null | undefined) {
+  return value == null ? "—" : `${Math.round(value)} ms`;
+}
+
+export function RoomConsole({ initialRoom }: { initialRoom: RoomData }) {
   const [room, setRoom] = useState(initialRoom);
   const [selectedId, setSelectedId] = useState(initialRoom.participants[0]?.id ?? "");
   const [inviteUrl, setInviteUrl] = useState("");
   const [notice, setNotice] = useState("");
-  const [mediaState, setMediaState] = useState<"not-configured" | "connecting" | "connected" | "error">(mediaConfigured ? "connecting" : "not-configured");
-  const [videoTracks, setVideoTracks] = useState<Record<string, RemoteVideoTrack>>({});
-  const liveKitRoomRef = useRef<LiveKitRoom | null>(null);
+  const [mediaState, setMediaState] = useState<"connecting" | "connected" | "error">("connecting");
+  const [tracks, setTracks] = useState<Record<string, TrackState>>({});
+  const [stats, setStats] = useState<Record<string, RelayConnectionStats>>({});
+  const transportRef = useRef<VdoNinjaTransportProvider | null>(null);
+  const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const viewingRef = useRef<Set<string>>(new Set());
+  const statsCollectorsRef = useRef<Map<string, StatsCollector>>(new Map());
+
+  const participantByStream = useMemo(() => {
+    const map = new Map<string, string>();
+    room.participants.forEach((participant) => map.set(mediaStreamId(participant.id), participant.id));
+    return map;
+  }, [room.participants]);
 
   async function refreshRoom() {
     const response = await fetch(`/api/rooms/${room.publicId}`, { cache: "no-store" });
@@ -50,35 +75,49 @@ export function RoomConsole({ initialRoom, mediaConfigured }: { initialRoom: Roo
   useEffect(() => {
     const timer = window.setInterval(() => void refreshRoom(), 1800);
     return () => window.clearInterval(timer);
-  });
+  }, [room.publicId, selectedId]);
 
   useEffect(() => {
-    if (!mediaConfigured) return;
     let disposed = false;
-    const mediaRoom = new LiveKitRoom({ adaptiveStream: true, dynacast: true });
-    liveKitRoomRef.current = mediaRoom;
+    const transport = new VdoNinjaTransportProvider();
+    transportRef.current = transport;
 
-    mediaRoom.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => {
-      if (track.kind !== Track.Kind.Video) return;
-      setVideoTracks((current) => ({ ...current, [participant.identity]: track as RemoteVideoTrack }));
+    const offState = transport.onStateChange((state) => {
+      if (disposed) return;
+      if (state === "connected") setMediaState("connected");
+      else if (state === "reconnecting" || state === "degraded" || state === "connecting") setMediaState("connecting");
+      else if (state === "disconnected") setMediaState("error");
     });
-    mediaRoom.on(RoomEvent.TrackUnsubscribed, (_track, _publication, participant) => {
-      setVideoTracks((current) => {
-        const next = { ...current };
-        delete next[participant.identity];
-        return next;
+    const offTrack = transport.onRemoteTrack((event) => {
+      const participantId = participantByStream.get(event.streamId);
+      if (!participantId) return;
+      setTracks((current) => ({
+        ...current,
+        [participantId]: {
+          ...current[participantId],
+          [event.kind]: event.track,
+        },
+      }));
+    });
+    const offRemoved = transport.onRemoteTrackRemoved((event) => {
+      const participantId = participantByStream.get(event.streamId);
+      if (!participantId) return;
+      setTracks((current) => {
+        const existing = current[participantId];
+        if (!existing) return current;
+        const nextTrack = { ...existing };
+        delete nextTrack[event.kind];
+        return { ...current, [participantId]: nextTrack };
       });
     });
-    mediaRoom.on(RoomEvent.Reconnecting, () => setMediaState("connecting"));
-    mediaRoom.on(RoomEvent.Reconnected, () => setMediaState("connected"));
-    mediaRoom.on(RoomEvent.Disconnected, () => { if (!disposed) setMediaState("error"); });
 
     async function connect() {
       try {
         const response = await fetch(`/api/rooms/${room.publicId}/media-token`, { method: "POST" });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error ?? "media_connection_failed");
-        await mediaRoom.connect(data.url, data.token, { autoSubscribe: true });
+        if (data.provider !== "vdo.ninja") throw new Error("unsupported_media_provider");
+        await transport.connect({ roomId: data.roomId, password: data.password, label: `Producer · ${data.label}` });
         if (!disposed) setMediaState("connected");
       } catch (error) {
         if (!disposed) {
@@ -91,10 +130,66 @@ export function RoomConsole({ initialRoom, mediaConfigured }: { initialRoom: Roo
 
     return () => {
       disposed = true;
-      void mediaRoom.disconnect();
-      liveKitRoomRef.current = null;
+      offState();
+      offTrack();
+      offRemoved();
+      void transport.disconnect();
+      transportRef.current = null;
+      peersRef.current.clear();
+      viewingRef.current.clear();
+      statsCollectorsRef.current.clear();
     };
-  }, [mediaConfigured, room.publicId]);
+  }, [room.publicId, participantByStream]);
+
+  const activeIds = room.participants
+    .filter((participant) => ["CONNECTED", "DEGRADED", "RECONNECTING"].includes(participant.state))
+    .map((participant) => participant.id)
+    .join(",");
+
+  useEffect(() => {
+    if (mediaState !== "connected" || !transportRef.current) return;
+    const transport = transportRef.current;
+    const active = room.participants.filter((participant) => ["CONNECTED", "DEGRADED", "RECONNECTING"].includes(participant.state));
+
+    for (const participant of active) {
+      const streamId = mediaStreamId(participant.id);
+      if (viewingRef.current.has(streamId)) continue;
+      viewingRef.current.add(streamId);
+      void transport.view(streamId).then((peer) => {
+        peersRef.current.set(participant.id, peer);
+        statsCollectorsRef.current.set(participant.id, new StatsCollector());
+      }).catch((error) => {
+        viewingRef.current.delete(streamId);
+        setNotice(`Waiting for ${participant.displayName}: ${error instanceof Error ? error.message : "stream unavailable"}`);
+      });
+    }
+
+    const activeSet = new Set(active.map((participant) => participant.id));
+    for (const [participantId] of peersRef.current) {
+      if (activeSet.has(participantId)) continue;
+      const streamId = mediaStreamId(participantId);
+      void transport.stopViewing(streamId);
+      peersRef.current.delete(participantId);
+      viewingRef.current.delete(streamId);
+      statsCollectorsRef.current.delete(participantId);
+      setTracks((current) => {
+        const next = { ...current };
+        delete next[participantId];
+        return next;
+      });
+    }
+  }, [mediaState, activeIds, room.participants]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      for (const [participantId, peer] of peersRef.current) {
+        const collector = statsCollectorsRef.current.get(participantId);
+        if (!collector) continue;
+        void collector.collect(peer).then((next) => setStats((current) => ({ ...current, [participantId]: next }))).catch(() => undefined);
+      }
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   async function participantAction(participantId: string, action: "accept" | "reject" | "remove") {
     setNotice("");
@@ -140,6 +235,7 @@ export function RoomConsole({ initialRoom, mediaConfigured }: { initialRoom: Roo
   const selected = room.participants.find((participant) => participant.id === selectedId) ?? room.participants[0];
   const waiting = room.participants.filter((participant) => participant.state === "WAITING");
   const active = room.participants.filter((participant) => ["CONNECTED", "DEGRADED", "RECONNECTING"].includes(participant.state));
+  const selectedStats = selected ? stats[selected.id] : undefined;
 
   return (
     <>
@@ -171,19 +267,28 @@ export function RoomConsole({ initialRoom, mediaConfigured }: { initialRoom: Roo
             </div>
           )}
           <div className="monitor-grid">
-            {active.length === 0 && <div className="empty-multiview"><b>NO ACTIVE CONTRIBUTIONS</b><span>{mediaConfigured ? "Waiting for accepted guests to publish media." : "Configure the WebRTC media backend to receive contributions."}</span></div>}
+            {active.length === 0 && <div className="empty-multiview"><b>NO ACTIVE CONTRIBUTIONS</b><span>Accepted guests will appear here over VDO.Ninja WebRTC.</span></div>}
             {active.map((participant, index) => {
-              const track = videoTracks[participant.id];
+              const participantTracks = tracks[participant.id];
+              const participantStats = stats[participant.id];
               return (
                 <article className="monitor" key={participant.id} onClick={() => setSelectedId(participant.id)}>
                   <div className="video-surface">
-                    {track ? <RemoteVideo track={track}/> : <div className="video-center"><span>INPUT {String(index + 1).padStart(2, "0")}</span><b>{mediaState === "connected" ? "WAITING FOR VIDEO" : mediaState.toUpperCase()}</b></div>}
+                    {participantTracks?.video ? <RemoteVideo track={participantTracks.video}/> : <div className="video-center"><span>INPUT {String(index + 1).padStart(2, "0")}</span><b>{mediaState === "connected" ? "WAITING FOR VIDEO" : mediaState.toUpperCase()}</b></div>}
+                    {participantTracks?.audio && <RemoteAudio track={participantTracks.audio}/>} 
                     <div className="safe-label">{participant.roleLabel ?? "CONTRIBUTOR"}</div>
                     <div className="live-state"><StatusDot state={stateDot(participant.state)}/>{participant.state}</div>
                   </div>
                   <div className="monitor-info">
-                    <div className="monitor-title"><div><strong>{participant.displayName}</strong><small>{participant.roleLabel ?? "CONTRIBUTOR"}</small></div><span>{track ? "VIDEO" : "NO TRACK"}</span></div>
-                    <div className="metric-grid"><span>FORMAT <b>{track?.dimensions ? `${track.dimensions.width}×${track.dimensions.height}` : "—"}</b></span><span>SOURCE <b>{track ? "WEBRTC" : "—"}</b></span><span>BITRATE <b>—</b></span><span>RTT <b>—</b></span><span>LOSS <b>—</b></span><span>JITTER <b>—</b></span></div>
+                    <div className="monitor-title"><div><strong>{participant.displayName}</strong><small>{participant.roleLabel ?? "CONTRIBUTOR"}</small></div><span>{participantTracks?.video ? "VIDEO" : "NO TRACK"}</span></div>
+                    <div className="metric-grid">
+                      <span>FORMAT <b>{participantStats?.frameWidth && participantStats?.frameHeight ? `${participantStats.frameWidth}×${participantStats.frameHeight}` : "—"}</b></span>
+                      <span>CODEC <b>{participantStats?.codec?.replace("video/", "").toUpperCase() ?? "—"}</b></span>
+                      <span>BITRATE <b>{formatBitrate(participantStats?.inboundBitrate)}</b></span>
+                      <span>RTT <b>{formatMs(participantStats?.rttMs)}</b></span>
+                      <span>LOSS <b>{participantStats?.packetLossPercent == null ? "—" : `${participantStats.packetLossPercent.toFixed(1)}%`}</b></span>
+                      <span>JITTER <b>{formatMs(participantStats?.jitterMs)}</b></span>
+                    </div>
                     <div className="monitor-actions"><button disabled>MUTE</button><button disabled>SOLO</button><button disabled>TALK</button><button disabled>RETURN</button></div>
                   </div>
                 </article>
@@ -194,8 +299,8 @@ export function RoomConsole({ initialRoom, mediaConfigured }: { initialRoom: Roo
 
         <aside className="inspector">
           <div className="inspector-head"><span>INSPECTOR</span><b>{selected?.displayName ?? "NO SELECTION"}</b><small><StatusDot state={selected ? stateDot(selected.state) : "idle"}/> {selected?.state ?? "IDLE"}</small></div>
-          <section><h3>CONTRIBUTION</h3><label><span>Media backend</span><b>{mediaState.toUpperCase()}</b></label><label><span>Video track</span><b>{selected && videoTracks[selected.id] ? "RECEIVING" : "NOT RECEIVED"}</b></label><label><span>Role</span><b>{selected?.roleLabel ?? "CONTRIBUTOR"}</b></label></section>
-          <section><h3>NETWORK</h3><label><span>RTT</span><b>NOT AVAILABLE</b></label><label><span>Packet loss</span><b>NOT AVAILABLE</b></label><label><span>Jitter</span><b>NOT AVAILABLE</b></label></section>
+          <section><h3>CONTRIBUTION</h3><label><span>Media backend</span><b>VDO.NINJA · {mediaState.toUpperCase()}</b></label><label><span>Video track</span><b>{selected && tracks[selected.id]?.video ? "RECEIVING" : "NOT RECEIVED"}</b></label><label><span>Audio track</span><b>{selected && tracks[selected.id]?.audio ? "RECEIVING" : "NOT RECEIVED"}</b></label><label><span>Role</span><b>{selected?.roleLabel ?? "CONTRIBUTOR"}</b></label></section>
+          <section><h3>NETWORK</h3><label><span>RTT</span><b>{formatMs(selectedStats?.rttMs)}</b></label><label><span>Packet loss</span><b>{selectedStats?.packetLossPercent == null ? "NOT REPORTED" : `${selectedStats.packetLossPercent.toFixed(2)}%`}</b></label><label><span>Jitter</span><b>{formatMs(selectedStats?.jitterMs)}</b></label><label><span>Inbound bitrate</span><b>{formatBitrate(selectedStats?.inboundBitrate)}</b></label></section>
           {selected && selected.state !== "WAITING" && selected.state !== "DISCONNECTED" && selected.state !== "REJECTED" && <button className="danger-button" onClick={() => participantAction(selected.id, "remove")}>REMOVE GUEST</button>}
         </aside>
       </div>
@@ -204,7 +309,7 @@ export function RoomConsole({ initialRoom, mediaConfigured }: { initialRoom: Roo
         <button onClick={() => changeRoomState("PREFLIGHT")}>PREFLIGHT</button>
         <button onClick={() => changeRoomState("LIVE")} className={room.status === "LIVE" ? "ptt" : ""}>START PRODUCTION</button>
         <button onClick={() => changeRoomState("ENDED")}>END</button>
-        <div className="clock"><span>MEDIA</span><b>{mediaState === "connected" ? "ONLINE" : mediaState.toUpperCase()}</b><small>LIVEKIT</small></div>
+        <div className="clock"><span>MEDIA</span><b>{mediaState === "connected" ? "ONLINE" : mediaState.toUpperCase()}</b><small>VDO.NINJA</small></div>
       </footer>
     </>
   );
