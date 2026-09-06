@@ -28,7 +28,13 @@ export async function POST(request: Request) {
     include: { room: true },
   });
 
-  if (!participant || participant.state === "REJECTED" || participant.state === "DISCONNECTED") {
+  if (!participant) {
+    return NextResponse.json({ error: "participant_not_authorized" }, { status: 401 });
+  }
+  if (participant.state === "WAITING") {
+    return NextResponse.json({ error: "waiting_for_producer" }, { status: 409 });
+  }
+  if (participant.state !== "CONNECTED" && participant.state !== "DEGRADED" && participant.state !== "RECONNECTING") {
     return NextResponse.json({ error: "participant_not_authorized" }, { status: 401 });
   }
 
