@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./relay-extra.css";
 
 export const metadata: Metadata = {
   title: "Relay — Remote Production for OBS",
