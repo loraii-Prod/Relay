@@ -1,15 +1,20 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { RemoteVideoTrack } from "livekit-client";
 
-export function RemoteVideo({ track }: { track: RemoteVideoTrack }) {
+export function RemoteVideo({ track }: { track: MediaStreamTrack }) {
   const ref = useRef<HTMLVideoElement>(null);
+
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
-    track.attach(element);
-    return () => { track.detach(element); };
+    const stream = new MediaStream([track]);
+    element.srcObject = stream;
+    void element.play().catch(() => undefined);
+    return () => {
+      element.srcObject = null;
+    };
   }, [track]);
-  return <video ref={ref} autoPlay playsInline muted={false} />;
+
+  return <video ref={ref} autoPlay playsInline muted />;
 }
