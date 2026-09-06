@@ -1,18 +1,22 @@
 {
   "name": "relay-broadcast",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev"
   },
   "dependencies": {
+    "@prisma/client": "^6.16.1",
     "next": "^16.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "lucide-react": "^0.468.0"
+    "lucide-react": "^0.468.0",
+    "zod": "^4.1.5"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -20,6 +24,7 @@
     "@types/react-dom": "^19.0.0",
     "eslint": "^9.0.0",
     "eslint-config-next": "^16.0.0",
+    "prisma": "^6.16.1",
     "typescript": "^5.7.0"
   }
 }
