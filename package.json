@@ -1,6 +1,6 @@
 {
   "name": "relay-broadcast",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6.16.1",
+    "bcryptjs": "^3.0.2",
     "livekit-client": "^2.15.6",
     "livekit-server-sdk": "^2.13.3",
     "next": "^16.0.0",
